@@ -17,6 +17,64 @@ import { minimatch } from 'minimatch';
 
 import { execSync } from 'child_process';
 
+// Utility function to safely escape shell arguments - ONLY for user text
+function escapeShellArg(arg: string): string {
+  return `'${arg.replace(/'/g, "'\\''")}'`;
+}
+
+// Build TaskWarrior modify arguments from parsed data
+function buildTaskModifyArgs(data: any): string[] {
+  let task_args: string[] = [];
+
+  if (data.description) {
+    task_args.push(`description:${escapeShellArg(data.description)}`);
+  }
+  if (data.due) {
+    task_args.push(`due:${data.due}`);
+  }
+  if (data.priority) {
+    task_args.push(`priority:${data.priority}`);
+  }
+  if (data.start) {
+    task_args.push(`start:${data.start}`);
+  }
+  if (data.stop_task) {
+    task_args.push(`start:`);
+  }
+  if (data.wait) {
+    task_args.push(`wait:${data.wait}`);
+  }
+  if (data.until) {
+    task_args.push(`until:${data.until}`);
+  }
+  if (data.scheduled) {
+    task_args.push(`scheduled:${data.scheduled}`);
+  }
+  if (data.project) {
+    task_args.push(`project:${data.project}`);
+  }
+  if (data.depends) {
+    task_args.push(`depends:${data.depends.join(',')}`);
+  }
+  if (data.tags) {
+    for (let tag of data.tags) {
+      task_args.push(`+${tag}`);
+    }
+  }
+  if (data.tags_remove) {
+    for (let tag of data.tags_remove) {
+      task_args.push(`-${tag}`);
+    }
+  }
+  if (data.clear_fields) {
+    for (let field of data.clear_fields) {
+      task_args.push(`${field}:`);
+    }
+  }
+
+  return task_args;
+}
+
 // Schema definitions
 
 // Base task schema that covers common TaskWarrior fields
@@ -28,20 +86,20 @@ const taskSchema = z.object({
   modified: z.string().datetime().optional(), // ISO timestamp
   due: z.string().optional(), // ISO timestamp
   priority: z.enum(["H", "M", "L"]).optional(),
-  project: z.string().regex(/^[a-z.]+$/).optional(),
-  tags: z.array(z.string().regex(/^a-z$/)).optional(),
+  project: z.string().regex(/^[a-zA-Z0-9._-]+$/).optional(),
+  tags: z.array(z.string().regex(/^[@a-z0-9_-]+$/)).optional(),
 });
 
 // Request schemas for different operations
 const listPendingTasksRequest = z.object({
-  project: z.string().regex(/^[a-z.]+$/).optional(),
-  tags: z.array(z.string().regex(/^a-z$/)).optional(),
+  project: z.string().regex(/^[a-zA-Z0-9._-]+$/).optional(),
+  tags: z.array(z.string().regex(/^[@a-z0-9_-]+$/)).optional(),
 });
 
 const listTasksRequest = z.object({
   status: z.enum(["pending", "completed", "deleted", "waiting", "recurring"]).optional(),
-  project: z.string().regex(/^[a-z.]+$/).optional(),
-  tags: z.array(z.string().regex(/^a-z$/)).optional(),
+  project: z.string().regex(/^[a-zA-Z0-9._-]+$/).optional(),
+  tags: z.array(z.string().regex(/^[@a-z0-9_-]+$/)).optional(),
 });
 
 const getTaskRequest = z.object({
@@ -57,8 +115,109 @@ const addTaskRequest = z.object({
   // Optional fields that can be set when adding
   due: z.string().optional(), // ISO timestamp
   priority: z.enum(["H", "M", "L"]).optional(),
-  project: z.string().regex(/^[a-z.]+$/).optional(),
-  tags: z.array(z.string().regex(/^a-z$/)).optional(),
+  project: z.string().regex(/^[a-zA-Z0-9._-]+$/).optional(),
+  tags: z.array(z.string().regex(/^[@a-z0-9_-]+$/)).optional(),
+});
+
+const modifyTaskRequest = z.object({
+  identifier: z.string().min(1, "Task identifier cannot be empty"),
+  // Optional fields that can be modified
+  description: z.string().min(1, "Description cannot be empty").optional(),
+  due: z.string().datetime("Due date must be a valid ISO timestamp").optional(),
+  start: z.string().datetime("Start date must be a valid ISO timestamp").optional(),
+  stop_task: z.boolean().optional(),
+  wait: z.string().datetime("Wait date must be a valid ISO timestamp").optional(),
+  until: z.string().datetime("Until date must be a valid ISO timestamp").optional(),
+  scheduled: z.string().datetime("Scheduled date must be a valid ISO timestamp").optional(),
+  priority: z.enum(["H", "M", "L"]).optional(),
+  project: z.string().regex(/^[a-zA-Z0-9._-]+$/, "Project name can only contain letters, numbers, dots, hyphens, and underscores").optional(),
+  depends: z.array(z.string().min(1, "Dependency must be a valid task ID or UUID")).optional(),
+  tags: z.array(z.string().regex(/^[@a-z0-9_-]+$/, "Tags can only contain lowercase letters, numbers, hyphens, underscores, and @ symbols")).optional(),
+  tags_remove: z.array(z.string().regex(/^[@a-z0-9_-]+$/, "Tags can only contain lowercase letters, numbers, hyphens, underscores, and @ symbols")).optional(),
+  clear_fields: z.array(z.enum(["due", "start", "wait", "until", "scheduled", "priority", "project", "depends"])).optional(),
+});
+
+const modifyTasksBulkRequest = z.object({
+  filter: z.string().min(1, "Filter cannot be empty"),
+  // Same modification fields as modify_task
+  description: z.string().min(1, "Description cannot be empty").optional(),
+  due: z.string().datetime("Due date must be a valid ISO timestamp").optional(),
+  start: z.string().datetime("Start date must be a valid ISO timestamp").optional(),
+  stop_task: z.boolean().optional(),
+  wait: z.string().datetime("Wait date must be a valid ISO timestamp").optional(),
+  until: z.string().datetime("Until date must be a valid ISO timestamp").optional(),
+  scheduled: z.string().datetime("Scheduled date must be a valid ISO timestamp").optional(),
+  priority: z.enum(["H", "M", "L"]).optional(),
+  project: z.string().regex(/^[a-zA-Z0-9._-]+$/, "Project name can only contain letters, numbers, dots, hyphens, and underscores").optional(),
+  depends: z.array(z.string().min(1, "Dependency must be a valid task ID or UUID")).optional(),
+  tags: z.array(z.string().regex(/^[@a-z0-9_-]+$/, "Tags can only contain lowercase letters, numbers, hyphens, underscores, and @ symbols")).optional(),
+  tags_remove: z.array(z.string().regex(/^[@a-z0-9_-]+$/, "Tags can only contain lowercase letters, numbers, hyphens, underscores, and @ symbols")).optional(),
+  clear_fields: z.array(z.enum(["due", "start", "wait", "until", "scheduled", "priority", "project", "depends"])).optional(),
+});
+
+const getTaskInfoRequest = z.object({
+  identifier: z.string(),
+});
+
+const countTasksRequest = z.object({
+  status: z.enum(["pending", "completed", "deleted", "waiting", "recurring"]).optional(),
+  project: z.string().regex(/^[a-zA-Z0-9._-]+$/).optional(),
+  tags: z.array(z.string().regex(/^[@a-z0-9_-]+$/)).optional(),
+  priority: z.enum(["H", "M", "L"]).optional(),
+});
+
+const listTasksFilteredRequest = z.object({
+  status: z.enum(["pending", "completed", "deleted", "waiting", "recurring"]).optional(),
+  project: z.string().regex(/^[a-zA-Z0-9._-]+$/).optional(),
+  tags: z.array(z.string().regex(/^[@a-z0-9_-]+$/)).optional(),
+  priority: z.enum(["H", "M", "L"]).optional(),
+  report: z.string().optional(), // Report type: list, next, all, etc.
+});
+
+const deleteTaskRequest = z.object({
+  identifier: z.string(),
+});
+
+const annotateTaskRequest = z.object({
+  identifier: z.string(),
+  annotation: z.string(),
+});
+
+const appendTaskRequest = z.object({
+  identifier: z.string(),
+  text: z.string(),
+});
+
+const prependTaskRequest = z.object({
+  identifier: z.string(),
+  text: z.string(),
+});
+
+const duplicateTaskRequest = z.object({
+  identifier: z.string(),
+});
+
+const undoLastRequest = z.object({
+  // No parameters needed for undo
+});
+
+const builtinReportRequest = z.object({
+  report: z.enum(["list", "all", "active", "completed", "blocked", "overdue", "ready", "recurring"]),
+  project: z.string().regex(/^[a-zA-Z0-9._-]+$/).optional(),
+  tags: z.array(z.string().regex(/^[@a-z0-9_-]+$/)).optional(),
+  priority: z.enum(["H", "M", "L"]).optional(),
+});
+
+const visualizationReportRequest = z.object({
+  report: z.enum(["burndown", "calendar", "history", "summary", "timesheet"]),
+  project: z.string().regex(/^[a-zA-Z0-9._-]+$/).optional(),
+  tags: z.array(z.string().regex(/^[@a-z0-9_-]+$/)).optional(),
+});
+
+const customReportRequest = z.object({
+  report: z.string(),
+  columns: z.array(z.string()).optional(),
+  filter: z.string().optional(),
 });
 
 // Response schemas
@@ -66,6 +225,19 @@ const listTasksResponse = z.array(taskSchema);
 const getTaskResponse = taskSchema;
 const markTaskDoneResponse = taskSchema;
 const addTaskResponse = taskSchema;
+const modifyTaskResponse = taskSchema;
+const getTaskInfoResponse = z.string();
+const countTasksResponse = z.string();
+const listTasksFilteredResponse = z.string();
+const deleteTaskResponse = z.string();
+const annotateTaskResponse = z.string();
+const appendTaskResponse = z.string();
+const prependTaskResponse = z.string();
+const duplicateTaskResponse = z.string();
+const undoLastResponse = z.string();
+const builtinReportResponse = z.string();
+const visualizationReportResponse = z.string();
+const customReportResponse = z.string();
 
 // Error schema
 const errorResponse = z.object({
@@ -107,6 +279,76 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         name: "add_task",
         description: "Add a new task",
         inputSchema: zodToJsonSchema(addTaskRequest) as ToolInput,
+      },
+      {
+        name: "modify_task",
+        description: "Modify an existing task",
+        inputSchema: zodToJsonSchema(modifyTaskRequest) as ToolInput,
+      },
+      {
+        name: "modify_tasks_bulk",
+        description: "Modify multiple tasks using TaskWarrior filter syntax",
+        inputSchema: zodToJsonSchema(modifyTasksBulkRequest) as ToolInput,
+      },
+      {
+        name: "get_task_info",
+        description: "Get detailed information about a specific task",
+        inputSchema: zodToJsonSchema(getTaskInfoRequest) as ToolInput,
+      },
+      {
+        name: "count_tasks",
+        description: "Count tasks matching specified filters",
+        inputSchema: zodToJsonSchema(countTasksRequest) as ToolInput,
+      },
+      {
+        name: "list_tasks_filtered",
+        description: "List tasks with comprehensive filtering options",
+        inputSchema: zodToJsonSchema(listTasksFilteredRequest) as ToolInput,
+      },
+      {
+        name: "delete_task",
+        description: "Delete a task from TaskWarrior",
+        inputSchema: zodToJsonSchema(deleteTaskRequest) as ToolInput,
+      },
+      {
+        name: "annotate_task",
+        description: "Add an annotation to a task",
+        inputSchema: zodToJsonSchema(annotateTaskRequest) as ToolInput,
+      },
+      {
+        name: "append_task",
+        description: "Append text to a task description",
+        inputSchema: zodToJsonSchema(appendTaskRequest) as ToolInput,
+      },
+      {
+        name: "prepend_task",
+        description: "Prepend text to a task description",
+        inputSchema: zodToJsonSchema(prependTaskRequest) as ToolInput,
+      },
+      {
+        name: "duplicate_task",
+        description: "Duplicate an existing task",
+        inputSchema: zodToJsonSchema(duplicateTaskRequest) as ToolInput,
+      },
+      {
+        name: "undo_last",
+        description: "Undo the last TaskWarrior operation",
+        inputSchema: zodToJsonSchema(undoLastRequest) as ToolInput,
+      },
+      {
+        name: "builtin_report",
+        description: "Generate built-in TaskWarrior reports (list, all, active, completed, blocked, overdue, ready, recurring)",
+        inputSchema: zodToJsonSchema(builtinReportRequest) as ToolInput,
+      },
+      {
+        name: "visualization_report",
+        description: "Generate TaskWarrior visualization reports (burndown, calendar, history, summary, timesheet)",
+        inputSchema: zodToJsonSchema(visualizationReportRequest) as ToolInput,
+      },
+      {
+        name: "custom_report",
+        description: "Execute custom TaskWarrior reports with user-defined columns and filters",
+        inputSchema: zodToJsonSchema(customReportRequest) as ToolInput,
       },
     ],
   };
@@ -155,14 +397,242 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new Error(`Invalid arguments for add_task: ${parsed.error}`);
         }
 
-        let task_args = [parsed.data.description];
-        
+        let task_args = [`add`];
+
+        // Add description with proper escaping
+        task_args.push(escapeShellArg(parsed.data.description));
+
         if (parsed.data.due) {
           task_args.push(`due:${parsed.data.due}`);
         }
         if (parsed.data.priority) {
           task_args.push(`priority:${parsed.data.priority}`);
         }
+        if (parsed.data.project) {
+          task_args.push(`project:${escapeShellArg(parsed.data.project)}`);
+        }
+        if (parsed.data.tags) {
+          for (let tag of parsed.data.tags) {
+            task_args.push(`+${escapeShellArg(tag)}`);
+          }
+        }
+
+        const content = execSync(`task ${task_args.join(" ")}`, { maxBuffer: 1024 * 1024 * 10 }).toString().trim();
+        return {
+          content: [{ type: "text", text: content }],
+        };
+      }
+
+      case "modify_task": {
+        const parsed = modifyTaskRequest.safeParse(args);
+        if (!parsed.success) {
+          const errorDetails = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; ');
+          throw new Error(`Invalid arguments for modify_task: ${errorDetails}`);
+        }
+
+        const task_args = buildTaskModifyArgs(parsed.data);
+
+        const identifier = escapeShellArg(parsed.data.identifier);
+        const content = execSync(`task ${identifier} modify ${task_args.join(" ")}`, { maxBuffer: 1024 * 1024 * 10 }).toString().trim();
+        return {
+          content: [{ type: "text", text: content }],
+        };
+      }
+
+      case "modify_tasks_bulk": {
+        const parsed = modifyTasksBulkRequest.safeParse(args);
+        if (!parsed.success) {
+          const errorDetails = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; ');
+          throw new Error(`Invalid arguments for modify_tasks_bulk: ${errorDetails}`);
+        }
+
+        const task_args = buildTaskModifyArgs(parsed.data);
+
+        const filter = parsed.data.filter;
+        const content = execSync(`yes | task ${filter} modify ${task_args.join(" ")}`, { maxBuffer: 1024 * 1024 * 10, shell: '/bin/bash' }).toString().trim();
+        return {
+          content: [{ type: "text", text: content }],
+        };
+      }
+
+      case "get_task_info": {
+        const parsed = getTaskInfoRequest.safeParse(args);
+        if (!parsed.success) {
+          throw new Error(`Invalid arguments for get_task_info: ${parsed.error}`);
+        }
+
+        const content = execSync(`task ${parsed.data.identifier} info`, { maxBuffer: 1024 * 1024 * 10 }).toString().trim();
+        return {
+          content: [{ type: "text", text: content }],
+        };
+      }
+
+      case "count_tasks": {
+        const parsed = countTasksRequest.safeParse(args);
+        if (!parsed.success) {
+          throw new Error(`Invalid arguments for count_tasks: ${parsed.error}`);
+        }
+
+        let task_args = [];
+
+        if (parsed.data.status) {
+          task_args.push(`status:${parsed.data.status}`);
+        }
+        if (parsed.data.project) {
+          task_args.push(`project:${parsed.data.project}`);
+        }
+        if (parsed.data.priority) {
+          task_args.push(`priority:${parsed.data.priority}`);
+        }
+        if (parsed.data.tags) {
+          for (let tag of parsed.data.tags) {
+            task_args.push(`+${tag}`);
+          }
+        }
+
+        const content = execSync(`task ${task_args.join(" ")} count`, { maxBuffer: 1024 * 1024 * 10 }).toString().trim();
+        return {
+          content: [{ type: "text", text: content }],
+        };
+      }
+
+      case "list_tasks_filtered": {
+        const parsed = listTasksFilteredRequest.safeParse(args);
+        if (!parsed.success) {
+          throw new Error(`Invalid arguments for list_tasks_filtered: ${parsed.error}`);
+        }
+
+        let task_args = [];
+
+        if (parsed.data.status) {
+          task_args.push(`status:${parsed.data.status}`);
+        }
+        if (parsed.data.project) {
+          task_args.push(`project:${parsed.data.project}`);
+        }
+        if (parsed.data.priority) {
+          task_args.push(`priority:${parsed.data.priority}`);
+        }
+        if (parsed.data.tags) {
+          for (let tag of parsed.data.tags) {
+            task_args.push(`+${tag}`);
+          }
+        }
+
+        // Use specified report or default to 'list'
+        const report = parsed.data.report || 'list';
+        const content = execSync(`task ${task_args.join(" ")} ${report}`, { maxBuffer: 1024 * 1024 * 10 }).toString().trim();
+        return {
+          content: [{ type: "text", text: content }],
+        };
+      }
+
+      case "delete_task": {
+        const parsed = deleteTaskRequest.safeParse(args);
+        if (!parsed.success) {
+          throw new Error(`Invalid arguments for delete_task: ${parsed.error}`);
+        }
+
+        const content = execSync(`task rc.confirmation=no ${parsed.data.identifier} delete`, { maxBuffer: 1024 * 1024 * 10 }).toString().trim();
+        return {
+          content: [{ type: "text", text: content }],
+        };
+      }
+
+      case "annotate_task": {
+        const parsed = annotateTaskRequest.safeParse(args);
+        if (!parsed.success) {
+          throw new Error(`Invalid arguments for annotate_task: ${parsed.error}`);
+        }
+
+        const content = execSync(`task ${parsed.data.identifier} annotate ${escapeShellArg(parsed.data.annotation)}`, { maxBuffer: 1024 * 1024 * 10 }).toString().trim();
+        return {
+          content: [{ type: "text", text: content }],
+        };
+      }
+
+      case "append_task": {
+        const parsed = appendTaskRequest.safeParse(args);
+        if (!parsed.success) {
+          throw new Error(`Invalid arguments for append_task: ${parsed.error}`);
+        }
+
+        const content = execSync(`task ${parsed.data.identifier} append ${escapeShellArg(parsed.data.text)}`, { maxBuffer: 1024 * 1024 * 10 }).toString().trim();
+        return {
+          content: [{ type: "text", text: content }],
+        };
+      }
+
+      case "prepend_task": {
+        const parsed = prependTaskRequest.safeParse(args);
+        if (!parsed.success) {
+          throw new Error(`Invalid arguments for prepend_task: ${parsed.error}`);
+        }
+
+        const content = execSync(`task ${parsed.data.identifier} prepend ${escapeShellArg(parsed.data.text)}`, { maxBuffer: 1024 * 1024 * 10 }).toString().trim();
+        return {
+          content: [{ type: "text", text: content }],
+        };
+      }
+
+      case "duplicate_task": {
+        const parsed = duplicateTaskRequest.safeParse(args);
+        if (!parsed.success) {
+          throw new Error(`Invalid arguments for duplicate_task: ${parsed.error}`);
+        }
+
+        const content = execSync(`task ${parsed.data.identifier} duplicate`, { maxBuffer: 1024 * 1024 * 10 }).toString().trim();
+        return {
+          content: [{ type: "text", text: content }],
+        };
+      }
+
+      case "undo_last": {
+        const parsed = undoLastRequest.safeParse(args);
+        if (!parsed.success) {
+          throw new Error(`Invalid arguments for undo_last: ${parsed.error}`);
+        }
+
+        const content = execSync(`task rc.confirmation=no undo`, { maxBuffer: 1024 * 1024 * 10 }).toString().trim();
+        return {
+          content: [{ type: "text", text: content }],
+        };
+      }
+
+      case "builtin_report": {
+        const parsed = builtinReportRequest.safeParse(args);
+        if (!parsed.success) {
+          throw new Error(`Invalid arguments for builtin_report: ${parsed.error}`);
+        }
+
+        let task_args = [];
+
+        if (parsed.data.project) {
+          task_args.push(`project:${parsed.data.project}`);
+        }
+        if (parsed.data.priority) {
+          task_args.push(`priority:${parsed.data.priority}`);
+        }
+        if (parsed.data.tags) {
+          for (let tag of parsed.data.tags) {
+            task_args.push(`+${tag}`);
+          }
+        }
+
+        const content = execSync(`task ${task_args.join(" ")} ${parsed.data.report}`, { maxBuffer: 1024 * 1024 * 10 }).toString().trim();
+        return {
+          content: [{ type: "text", text: content }],
+        };
+      }
+
+      case "visualization_report": {
+        const parsed = visualizationReportRequest.safeParse(args);
+        if (!parsed.success) {
+          throw new Error(`Invalid arguments for visualization_report: ${parsed.error}`);
+        }
+
+        let task_args = [];
+
         if (parsed.data.project) {
           task_args.push(`project:${parsed.data.project}`);
         }
@@ -172,7 +642,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         }
 
-        const content = execSync(`task add ${task_args.join(" ")}`, { maxBuffer: 1024 * 1024 * 10 }).toString().trim();
+        const content = execSync(`task ${task_args.join(" ")} ${parsed.data.report}`, { maxBuffer: 1024 * 1024 * 10 }).toString().trim();
+        return {
+          content: [{ type: "text", text: content }],
+        };
+      }
+
+      case "custom_report": {
+        const parsed = customReportRequest.safeParse(args);
+        if (!parsed.success) {
+          throw new Error(`Invalid arguments for custom_report: ${parsed.error}`);
+        }
+
+        let cmd_parts = ["task"];
+
+        // Add filter before the report name
+        if (parsed.data.filter) {
+          cmd_parts.push(parsed.data.filter);
+        }
+
+        // Add report name
+        cmd_parts.push(parsed.data.report);
+
+        // Add column configuration if specified
+        if (parsed.data.columns && parsed.data.columns.length > 0) {
+          const columns = parsed.data.columns.join(",");
+          const labels = parsed.data.columns.map(col => col.charAt(0).toUpperCase() + col.slice(1)).join(",");
+          cmd_parts.push(`rc.report.${parsed.data.report}.columns=${columns}`);
+          cmd_parts.push(`rc.report.${parsed.data.report}.labels=${labels}`);
+        }
+
+        const command = cmd_parts.join(" ");
+        const content = execSync(command, { maxBuffer: 1024 * 1024 * 10 }).toString().trim();
         return {
           content: [{ type: "text", text: content }],
         };

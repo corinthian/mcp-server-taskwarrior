@@ -299,3 +299,10 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 .aider*
+
+# Project-specific temporary/draft files
+*_draft.md
+Alexandria_v*_RECORD_Mode_Draft.md
+MCP_Field_Usage_Documentation.md
+MCP_Interface_Documentation.md
+TaskWarrior_Enhancement_Plan.md
