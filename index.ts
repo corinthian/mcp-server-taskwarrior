@@ -22,6 +22,39 @@ function escapeShellArg(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
+// Parse flexible date formats - accepts ISO timestamps or TaskWarrior shorthands
+// TaskWarrior natively supports: +7d, -2w, eom, eoy, monday, tuesday, etc.
+function parseFlexibleDate(dateStr: string): string {
+  // ISO 8601 timestamp regex
+  const isoRegex = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d{3})?(Z|[+-]\d{2}:\d{2})?)?$/;
+
+  // TaskWarrior relative date patterns: +3d, -2w, +1m, -1y, etc.
+  const relativeRegex = /^[+-]\d+[dwmqy]$/;
+
+  // TaskWarrior special dates: eom, eoq, eoy, som, soq, soy, today, tomorrow, yesterday
+  const specialDates = /^(eom|eoq|eoy|som|soq|soy|today|tomorrow|yesterday|now)$/i;
+
+  // Day names: monday, tuesday, etc.
+  const dayNames = /^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i;
+
+  // Month names: january, february, etc.
+  const monthNames = /^(january|february|march|april|may|june|july|august|september|october|november|december)$/i;
+
+  // Ordinal dates: 1st, 2nd, 23rd, etc.
+  const ordinalRegex = /^\d{1,2}(st|nd|rd|th)$/i;
+
+  if (isoRegex.test(dateStr) ||
+      relativeRegex.test(dateStr) ||
+      specialDates.test(dateStr) ||
+      dayNames.test(dateStr) ||
+      monthNames.test(dateStr) ||
+      ordinalRegex.test(dateStr)) {
+    return dateStr;
+  }
+
+  throw new Error(`Invalid date format: "${dateStr}". Supported formats: ISO timestamps (2024-01-15T10:30:00Z), relative dates (+7d, -2w), special dates (today, tomorrow, eom), day names (monday), or ordinal dates (15th)`);
+}
+
 // Build TaskWarrior modify arguments from parsed data
 function buildTaskModifyArgs(data: any): string[] {
   let task_args: string[] = [];
@@ -30,24 +63,29 @@ function buildTaskModifyArgs(data: any): string[] {
     task_args.push(`description:${escapeShellArg(data.description)}`);
   }
   if (data.due) {
+    parseFlexibleDate(data.due); // Validate format
     task_args.push(`due:${data.due}`);
   }
   if (data.priority) {
     task_args.push(`priority:${data.priority}`);
   }
   if (data.start) {
+    parseFlexibleDate(data.start); // Validate format
     task_args.push(`start:${data.start}`);
   }
   if (data.stop_task) {
     task_args.push(`start:`);
   }
   if (data.wait) {
+    parseFlexibleDate(data.wait); // Validate format
     task_args.push(`wait:${data.wait}`);
   }
   if (data.until) {
+    parseFlexibleDate(data.until); // Validate format
     task_args.push(`until:${data.until}`);
   }
   if (data.scheduled) {
+    parseFlexibleDate(data.scheduled); // Validate format
     task_args.push(`scheduled:${data.scheduled}`);
   }
   if (data.project) {
@@ -123,12 +161,12 @@ const modifyTaskRequest = z.object({
   identifier: z.string().min(1, "Task identifier cannot be empty"),
   // Optional fields that can be modified
   description: z.string().min(1, "Description cannot be empty").optional(),
-  due: z.string().datetime("Due date must be a valid ISO timestamp").optional(),
-  start: z.string().datetime("Start date must be a valid ISO timestamp").optional(),
+  due: z.string().min(1, "Due date cannot be empty").optional(),
+  start: z.string().min(1, "Start date cannot be empty").optional(),
   stop_task: z.boolean().optional(),
-  wait: z.string().datetime("Wait date must be a valid ISO timestamp").optional(),
-  until: z.string().datetime("Until date must be a valid ISO timestamp").optional(),
-  scheduled: z.string().datetime("Scheduled date must be a valid ISO timestamp").optional(),
+  wait: z.string().min(1, "Wait date cannot be empty").optional(),
+  until: z.string().min(1, "Until date cannot be empty").optional(),
+  scheduled: z.string().min(1, "Scheduled date cannot be empty").optional(),
   priority: z.enum(["H", "M", "L"]).optional(),
   project: z.string().regex(/^[a-zA-Z0-9._-]+$/, "Project name can only contain letters, numbers, dots, hyphens, and underscores").optional(),
   depends: z.array(z.string().min(1, "Dependency must be a valid task ID or UUID")).optional(),
@@ -141,12 +179,12 @@ const modifyTasksBulkRequest = z.object({
   filter: z.string().min(1, "Filter cannot be empty"),
   // Same modification fields as modify_task
   description: z.string().min(1, "Description cannot be empty").optional(),
-  due: z.string().datetime("Due date must be a valid ISO timestamp").optional(),
-  start: z.string().datetime("Start date must be a valid ISO timestamp").optional(),
+  due: z.string().min(1, "Due date cannot be empty").optional(),
+  start: z.string().min(1, "Start date cannot be empty").optional(),
   stop_task: z.boolean().optional(),
-  wait: z.string().datetime("Wait date must be a valid ISO timestamp").optional(),
-  until: z.string().datetime("Until date must be a valid ISO timestamp").optional(),
-  scheduled: z.string().datetime("Scheduled date must be a valid ISO timestamp").optional(),
+  wait: z.string().min(1, "Wait date cannot be empty").optional(),
+  until: z.string().min(1, "Until date cannot be empty").optional(),
+  scheduled: z.string().min(1, "Scheduled date cannot be empty").optional(),
   priority: z.enum(["H", "M", "L"]).optional(),
   project: z.string().regex(/^[a-zA-Z0-9._-]+$/, "Project name can only contain letters, numbers, dots, hyphens, and underscores").optional(),
   depends: z.array(z.string().min(1, "Dependency must be a valid task ID or UUID")).optional(),
@@ -403,6 +441,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         task_args.push(escapeShellArg(parsed.data.description));
 
         if (parsed.data.due) {
+          parseFlexibleDate(parsed.data.due); // Validate format
           task_args.push(`due:${parsed.data.due}`);
         }
         if (parsed.data.priority) {
