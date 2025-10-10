@@ -3,9 +3,9 @@
   "version": "1.0.1",
   "description": "MCP server for taskwarrior",
   "license": "MIT",
-  "author": "Brock Wilcox",
-  "homepage": "https://github.com/awwaiid/mcp-server-taskwarrior",
-  "bugs": "https://github.com/awwaiid/mcp-server-taskwarrior/issues",
+  "author": "Richard Larsen (forked from Brock Wilcox's https://github.com/awwaiid/mcp-server-taskwarrior)",
+  "homepage": "https://github.com/corinthian/mcp-server-taskwarrior",
+  "bugs": "https://github.com/corinthian/mcp-server-taskwarrior/issues",
   "type": "module",
   "bin": {
     "mcp-server-taskwarrior": "dist/index.js"

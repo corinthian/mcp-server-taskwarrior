@@ -164,6 +164,10 @@ The server supports full TaskWarrior filter syntax:
 - `+urgent or priority:H` - Tasks tagged urgent OR high priority
 - `project.not:Personal and status:pending` - Non-personal pending tasks
 
+## Credits
+
+Forked from [Brock Wilcox's mcp-server-taskwarrior](https://github.com/awwaiid/mcp-server-taskwarrior).
+
 ## License
 
 This MCP server is licensed under the MIT License. See the LICENSE file for details.
